@@ -327,22 +327,6 @@ impl GovernanceContract {
         Ok(())
     }
 
-    /// Transfer governance administration. Only the current admin may authorize
-    /// the handover; emitting both addresses lets indexers track key rotation.
-    pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), GovernanceError> {
-        let mut config: Config = env.storage().instance().get(&DataKey::Config).unwrap();
-        let previous_admin = config.admin.clone();
-        previous_admin.require_auth();
-        config.admin = new_admin.clone();
-        env.storage().instance().set(&DataKey::Config, &config);
-
-        env.events().publish(
-            (Symbol::new(&env, "admin_transferred"), previous_admin.clone()),
-            AdminTransferred { previous_admin, new_admin },
-        );
-        Ok(())
-    }
-
     pub fn get_proposal(env: Env, id: u64) -> Result<Proposal, GovernanceError> {
         let proposal: Proposal = env
             .storage()
@@ -407,9 +391,16 @@ impl GovernanceContract {
             .ok_or(GovernanceError::Unauthorized)?;
         pending.require_auth();
         let mut config = Self::get_config(env.clone());
-        config.admin = pending;
+        let previous_admin = config.admin.clone();
+        config.admin = pending.clone();
         env.storage().instance().set(&DataKey::Config, &config);
         env.storage().instance().remove(&DataKey::PendingAdmin);
+
+        // Emitting both addresses lets indexers track key rotation.
+        env.events().publish(
+            (Symbol::new(&env, "admin_transferred"), previous_admin.clone()),
+            AdminTransferred { previous_admin, new_admin: pending },
+        );
         Ok(())
     }
 

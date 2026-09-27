@@ -38,6 +38,9 @@ are marked **BREAKING** below.
 
 ### Added
 
+- Token: total-supply checkpoints and `get_past_total_supply(ledger)`, so the
+  supply a proposal's `quorum_required` was computed from can be verified
+  on-chain after the fact. Supply history is not pruned. (2026-09-27)
 - CI: `Contract specs` workflow generates the interface spec JSON for both
   contracts (`quorum-token.spec.json`, `quorum-governance.spec.json`), uploads it
   as an artifact on every contracts change and attaches it to published releases.

@@ -396,6 +396,12 @@ impl GovernanceContract {
         config.admin = pending;
         env.storage().instance().set(&DataKey::Config, &config);
         env.storage().instance().remove(&DataKey::PendingAdmin);
+
+        // Emitting both addresses lets indexers track key rotation.
+        env.events().publish(
+            (Symbol::new(&env, "admin_transferred"), previous_admin.clone()),
+            AdminTransferred { previous_admin, new_admin: pending },
+        );
         Ok(())
     }
 

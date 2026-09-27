@@ -22,6 +22,9 @@ pub enum TokenError {
 /// of that ledger rather than the live balance. Tokens acquired after the
 /// snapshot therefore carry no weight, which is what blocks flash-loan and
 /// buy-the-vote attacks.
+///
+/// The same shape records total supply under `SupplyCheckpoints`, where
+/// `balance` is the supply after the ledger's last mint or burn.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Checkpoint {
@@ -92,6 +95,7 @@ pub enum DataKey {
     Allowance(Address, Address),
     Checkpoints(Address),
     PendingAdmin,
+    SupplyCheckpoints,
 }
 
 /// Ledgers in roughly one day, at Stellar's ~5 second close time.
@@ -128,7 +132,7 @@ impl QuorumToken {
         env.storage().instance().set(&DataKey::Name, &name);
         env.storage().instance().set(&DataKey::Symbol, &symbol);
         env.storage().instance().set(&DataKey::Decimals, &decimals);
-        env.storage().instance().set(&DataKey::TotalSupply, &initial_supply);
+        Self::set_total_supply(&env, initial_supply);
         Self::set_balance(&env, &admin, initial_supply);
 
         // The genesis allocation is a mint. Emitting it keeps supply
@@ -151,25 +155,23 @@ impl QuorumToken {
     /// through this, using a proposal's `snapshot_ledger`.
     pub fn get_past_balance(env: Env, owner: Address, ledger: u32) -> i128 {
         Self::touch_instance(&env);
-        let checkpoints = Self::checkpoints(&env, &owner);
+        Self::value_at(&Self::checkpoints(&env, &owner), ledger)
+    }
 
-        // Binary search for the first checkpoint recorded after `ledger`; the
-        // balance in effect is the one immediately before it.
-        let mut low = 0u32;
-        let mut high = checkpoints.len();
-        while low < high {
-            let mid = low + (high - low) / 2;
-            match checkpoints.get(mid) {
-                Some(checkpoint) if checkpoint.ledger <= ledger => low = mid + 1,
-                _ => high = mid,
-            }
-        }
-
-        if low == 0 {
-            0
-        } else {
-            checkpoints.get(low - 1).map(|c| c.balance).unwrap_or(0)
-        }
+    /// Total supply as of the end of `ledger`.
+    ///
+    /// Governance freezes `quorum_required` from the live supply when a
+    /// proposal is created; this lets anyone recompute that figure later from
+    /// the proposal's `snapshot_ledger`. Supply history is never pruned, so
+    /// the answer stays available after the proposal closes. Returns 0 for a
+    /// ledger before `initialize`.
+    ///
+    /// The value is the supply at the close of `ledger`. A mint or burn later
+    /// in the same ledger as a proposal's creation is included here but was
+    /// not in the live figure the proposal saw.
+    pub fn get_past_total_supply(env: Env, ledger: u32) -> i128 {
+        Self::touch_instance(&env);
+        Self::value_at(&Self::supply_checkpoints(&env), ledger)
     }
 
     pub fn balance(env: Env, owner: Address) -> i128 {
@@ -238,7 +240,7 @@ impl QuorumToken {
         let total_supply = supply.checked_add(amount).ok_or(TokenError::Overflow)?;
         let bal = Self::balance(env.clone(), to.clone());
         let new_balance = bal.checked_add(amount).ok_or(TokenError::Overflow)?;
-        env.storage().instance().set(&DataKey::TotalSupply, &total_supply);
+        Self::set_total_supply(&env, total_supply);
         Self::set_balance(&env, &to, new_balance);
 
         env.events().publish(
@@ -262,7 +264,7 @@ impl QuorumToken {
             .filter(|remaining| *remaining >= 0)
             .ok_or(TokenError::Overflow)?;
         Self::set_balance(&env, &from, bal - amount);
-        env.storage().instance().set(&DataKey::TotalSupply, &total_supply);
+        Self::set_total_supply(&env, total_supply);
 
         env.events().publish(
             (Symbol::new(&env, "burn"), from.clone()),
@@ -425,17 +427,7 @@ impl QuorumToken {
 
         let ledger = env.ledger().sequence();
         let mut checkpoints = Self::checkpoints(env, owner);
-        let len = checkpoints.len();
-
-        // Several transfers can land in one ledger. Collapse them so each
-        // ledger keeps exactly one entry — its closing balance — which is what
-        // keeps the binary search in get_past_balance unambiguous.
-        match checkpoints.get(len.saturating_sub(1)) {
-            Some(last) if len > 0 && last.ledger == ledger => {
-                checkpoints.set(len - 1, Checkpoint { ledger, balance });
-            }
-            _ => checkpoints.push_back(Checkpoint { ledger, balance }),
-        }
+        Self::record(&mut checkpoints, ledger, balance);
 
         // Drop history no snapshot can still ask for. Entries older than the
         // retention window are pruned, except the newest of them: that one is
@@ -457,6 +449,74 @@ impl QuorumToken {
         let checkpoints_key = DataKey::Checkpoints(owner.clone());
         env.storage().persistent().set(&checkpoints_key, &checkpoints);
         Self::touch(env, &checkpoints_key);
+    }
+
+    fn supply_checkpoints(env: &Env) -> Vec<Checkpoint> {
+        let key = DataKey::SupplyCheckpoints;
+        match env.storage().persistent().get(&key) {
+            Some(checkpoints) => {
+                Self::touch(env, &key);
+                checkpoints
+            }
+            None => Vec::new(env),
+        }
+    }
+
+    /// Writes the total supply and records a supply checkpoint at the current
+    /// ledger.
+    ///
+    /// Every supply change goes through here, for the same reason balances go
+    /// through `set_balance`. Unlike balance history this is never pruned:
+    /// supply only moves on admin mints and holder burns, so it grows slowly,
+    /// and the point of keeping it is auditing quorum figures long after the
+    /// proposals that used them have closed.
+    fn set_total_supply(env: &Env, total_supply: i128) {
+        env.storage().instance().set(&DataKey::TotalSupply, &total_supply);
+
+        let mut checkpoints = Self::supply_checkpoints(env);
+        Self::record(&mut checkpoints, env.ledger().sequence(), total_supply);
+
+        let key = DataKey::SupplyCheckpoints;
+        env.storage().persistent().set(&key, &checkpoints);
+        Self::touch(env, &key);
+    }
+
+    /// Appends `value` at `ledger`, or overwrites the last entry if it is
+    /// already at `ledger`.
+    ///
+    /// Several changes can land in one ledger. Collapsing them keeps exactly
+    /// one entry per ledger — its closing value — which is what keeps the
+    /// binary search in `value_at` unambiguous.
+    fn record(checkpoints: &mut Vec<Checkpoint>, ledger: u32, value: i128) {
+        let len = checkpoints.len();
+        match checkpoints.get(len.saturating_sub(1)) {
+            Some(last) if len > 0 && last.ledger == ledger => {
+                checkpoints.set(len - 1, Checkpoint { ledger, balance: value });
+            }
+            _ => checkpoints.push_back(Checkpoint { ledger, balance: value }),
+        }
+    }
+
+    /// The value in effect at the end of `ledger`: the most recent checkpoint
+    /// at or before it, or 0 if there is none.
+    fn value_at(checkpoints: &Vec<Checkpoint>, ledger: u32) -> i128 {
+        // Binary search for the first checkpoint recorded after `ledger`; the
+        // value in effect is the one immediately before it.
+        let mut low = 0u32;
+        let mut high = checkpoints.len();
+        while low < high {
+            let mid = low + (high - low) / 2;
+            match checkpoints.get(mid) {
+                Some(checkpoint) if checkpoint.ledger <= ledger => low = mid + 1,
+                _ => high = mid,
+            }
+        }
+
+        if low == 0 {
+            0
+        } else {
+            checkpoints.get(low - 1).map(|c| c.balance).unwrap_or(0)
+        }
     }
 }
 

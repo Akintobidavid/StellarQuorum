@@ -920,6 +920,102 @@ fn binary_search_resolves_the_correct_entry_across_many_checkpoints() {
     assert_eq!(token.get_past_balance(&holder, &10_000), 20_000);
 }
 
+// ─── Supply checkpoints ──────────────────────────────────────────────────────
+
+#[test]
+fn initial_supply_is_checkpointed() {
+    let env = Env::default();
+    env.ledger().set_sequence_number(10);
+    let (_admin, token) = deploy(&env);
+
+    assert_eq!(token.get_past_total_supply(&9), 0);
+    assert_eq!(token.get_past_total_supply(&10), INITIAL_SUPPLY);
+    assert_eq!(token.get_past_total_supply(&1_000), INITIAL_SUPPLY);
+}
+
+#[test]
+fn mint_and_burn_checkpoint_total_supply() {
+    let env = Env::default();
+    env.ledger().set_sequence_number(10);
+    let (admin, token) = deploy(&env);
+
+    env.ledger().set_sequence_number(30);
+    token.mint(&admin, &500_000);
+    env.ledger().set_sequence_number(40);
+    token.burn(&admin, &200_000);
+
+    assert_eq!(token.get_past_total_supply(&29), INITIAL_SUPPLY);
+    assert_eq!(token.get_past_total_supply(&30), 1_500_000);
+    assert_eq!(token.get_past_total_supply(&39), 1_500_000);
+    assert_eq!(token.get_past_total_supply(&40), 1_300_000);
+    assert_eq!(token.get_past_total_supply(&40), token.total_supply());
+}
+
+#[test]
+fn transfers_do_not_move_past_total_supply() {
+    let env = Env::default();
+    env.ledger().set_sequence_number(10);
+    let (admin, token) = deploy(&env);
+    let recipient = Address::generate(&env);
+
+    env.ledger().set_sequence_number(20);
+    token.transfer(&admin, &recipient, &400_000);
+
+    assert_eq!(token.get_past_total_supply(&20), INITIAL_SUPPLY);
+}
+
+#[test]
+fn supply_changes_in_one_ledger_collapse_to_the_closing_supply() {
+    let env = Env::default();
+    env.ledger().set_sequence_number(10);
+    let (admin, token) = deploy(&env);
+
+    env.ledger().set_sequence_number(20);
+    token.mint(&admin, &100_000);
+    token.burn(&admin, &30_000);
+    token.mint(&admin, &5_000);
+
+    assert_eq!(token.get_past_total_supply(&20), 1_075_000);
+    assert_eq!(token.get_past_total_supply(&19), INITIAL_SUPPLY);
+}
+
+#[test]
+fn a_refused_mint_writes_no_supply_checkpoint() {
+    let env = Env::default();
+    env.ledger().set_sequence_number(10);
+    let (admin, token) = deploy(&env);
+
+    env.ledger().set_sequence_number(20);
+    assert_eq!(
+        token.try_mint(&admin, &i128::MAX),
+        Err(Ok(TokenError::Overflow))
+    );
+    assert_eq!(token.get_past_total_supply(&20), INITIAL_SUPPLY);
+}
+
+#[test]
+fn supply_history_is_kept_past_the_balance_retention_window() {
+    let env = Env::default();
+    env.ledger().set_sequence_number(1);
+    let (admin, token) = deploy(&env);
+
+    env.ledger().set_sequence_number(100);
+    token.mint(&admin, &1);
+    env.ledger().set_sequence_number(200);
+    token.mint(&admin, &1);
+
+    // Far enough on that balance checkpoints from ledgers 1–200 would prune,
+    // but inside the TTL that the mints above extended instance storage to.
+    let later = 200 + CHECKPOINT_RETENTION + 10;
+    env.ledger().set_sequence_number(later);
+    token.mint(&admin, &1);
+
+    assert_eq!(token.get_past_total_supply(&1), INITIAL_SUPPLY);
+    assert_eq!(token.get_past_total_supply(&100), INITIAL_SUPPLY + 1);
+    assert_eq!(token.get_past_total_supply(&200), INITIAL_SUPPLY + 2);
+    assert_eq!(token.get_past_total_supply(&later), INITIAL_SUPPLY + 3);
+}
+
 // ─── Property test: binary search vs. naive linear scan (#161) ───────────────
 
 /// Minimal, dependency-free xorshift32 PRNG. Deterministic (fixed seed) so

@@ -1,13 +1,14 @@
 import Link from "next/link";
 import type { Proposal } from "@/lib/types";
 import StatusBadge from "./StatusBadge";
+import { formatNumber, t } from "@/lib/i18n";
 import VoteBar from "./VoteBar";
 
 function daysRelative(iso: string, future: boolean): string {
   const diff = Math.abs(new Date(iso).getTime() - Date.now());
   const days = Math.round(diff / 86400000);
-  if (days === 0) return future ? "Ends today" : "Ended today";
-  return future ? `Ends in ${days}d` : `Ended ${days}d ago`;
+  if (days === 0) return t(future ? "proposals.endsToday" : "proposals.endedToday");
+  return t(future ? "proposals.endsIn" : "proposals.endedAgo", { days: formatNumber(days) });
 }
 
 export default function ProposalCard({ proposal }: { proposal: Proposal }) {

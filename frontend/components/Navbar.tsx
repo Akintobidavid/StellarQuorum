@@ -2,6 +2,7 @@
 import Link from "next/link";
 import { Scale } from "lucide-react";
 import { useWallet } from "./WalletProvider";
+import { t } from "@/lib/i18n";
 
 /** Addresses are long and uniform; the tail is what makes one recognisable. */
 function shorten(address: string): string {
@@ -19,13 +20,13 @@ export default function Navbar() {
           Quorum
         </Link>
         <div className="flex items-center gap-6 text-sm text-slate-400">
-          <Link href="/proposals" className="hover:text-slate-200 hover:underline underline-offset-4 transition-colors">Proposals</Link>
-          <Link href="/create" className="hover:text-slate-200 hover:underline underline-offset-4 transition-colors">Create</Link>
+          <Link href="/proposals" className="hover:text-slate-200 hover:underline underline-offset-4 transition-colors">{t("nav.proposals")}</Link>
+          <Link href="/create" className="hover:text-slate-200 hover:underline underline-offset-4 transition-colors">{t("nav.create")}</Link>
           {address ? (
             <button
               onClick={disconnect}
               className="px-4 py-1.5 border border-[#1e2d40] text-slate-300 hover:bg-[#162032] rounded-md transition-colors font-mono"
-              aria-label={`Disconnect wallet ${address}`}
+              aria-label={t("nav.disconnect", { address })}
             >
               {shorten(address)}
             </button>
@@ -35,7 +36,7 @@ export default function Navbar() {
               disabled={pending}
               className="px-4 py-1.5 border border-blue-700 text-blue-400 hover:bg-blue-900/30 rounded-md transition-colors disabled:opacity-50"
             >
-              {pending ? "Connecting…" : "Connect Wallet"}
+              {pending ? t("nav.connecting") : t("nav.connect")}
             </button>
           )}
         </div>

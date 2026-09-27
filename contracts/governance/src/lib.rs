@@ -33,6 +33,7 @@ pub enum GovernanceError {
     TimelockNotExpired      = 12,
     Overflow                = 13,
     NoVotingPower           = 14,
+    NotInitialized          = 15,
 }
 
 /// Basis-point denominator: `quorum_bps` of 500 means 5% of total supply.
@@ -143,6 +144,7 @@ pub struct Proposal {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
     pub token: Address,
     pub quorum_bps: u32,
@@ -183,11 +185,11 @@ impl GovernanceContract {
     }
 
     pub fn create_proposal(env: Env, proposer: Address, title: String, description: String, metadata_uri: String) -> Result<u64, GovernanceError> {
+        let config: Config = Self::require_config(&env)?;
         proposer.require_auth();
         let count: u64 = env.storage().instance().get(&DataKey::ProposalCount).unwrap_or(0);
         let id = count + 1;
         let current = env.ledger().sequence();
-        let config: Config = env.storage().instance().get(&DataKey::Config).unwrap();
         let token = TokenClient::new(&env, &config.token);
 
         // Gate proposal creation on a real stake, so spamming the proposal
@@ -232,6 +234,7 @@ impl GovernanceContract {
     }
 
     pub fn vote(env: Env, voter: Address, proposal_id: u64, support: u32) -> Result<(), GovernanceError> {
+        let config: Config = Self::require_config(&env)?;
         voter.require_auth();
         if support > 2 { return Err(GovernanceError::InvalidVoteChoice); }
         if env.storage().persistent().has(&DataKey::HasVoted(proposal_id, voter.clone())) {
@@ -244,7 +247,6 @@ impl GovernanceContract {
 
         // Power is read at the proposal's snapshot ledger, not live, so tokens
         // bought or borrowed after the proposal opened carry no weight.
-        let config: Config = env.storage().instance().get(&DataKey::Config).unwrap();
         let voting_power = TokenClient::new(&env, &config.token)
             .get_past_balance(&voter, &proposal.snapshot_ledger);
         if voting_power <= 0 { return Err(GovernanceError::NoVotingPower); }
@@ -269,10 +271,10 @@ impl GovernanceContract {
     }
 
     pub fn finalize(env: Env, proposal_id: u64) -> Result<ProposalStatus, GovernanceError> {
+        let config: Config = Self::require_config(&env)?;
         let mut proposal: Proposal = env.storage().persistent()
             .get(&DataKey::Proposal(proposal_id)).ok_or(GovernanceError::ProposalNotFound)?;
         if env.ledger().sequence() <= proposal.end_ledger { return Err(GovernanceError::VotingNotActive); }
-        let config: Config = env.storage().instance().get(&DataKey::Config).unwrap();
         let total = proposal.for_votes + proposal.against_votes + proposal.abstain_votes;
         let quorum_ok = total >= proposal.quorum_required;
         let majority_for = proposal.for_votes > proposal.against_votes;
@@ -357,14 +359,14 @@ impl GovernanceContract {
     }
 
     pub fn get_config(env: Env) -> Config {
-        env.storage().instance().get(&DataKey::Config).unwrap()
+        Self::require_config(&env).unwrap()
     }
 
     pub fn cancel(env: Env, caller: Address, proposal_id: u64) -> Result<(), GovernanceError> {
+        let config: Config = Self::require_config(&env)?;
         caller.require_auth();
         let mut proposal: Proposal = env.storage().persistent()
             .get(&DataKey::Proposal(proposal_id)).ok_or(GovernanceError::ProposalNotFound)?;
-        let config: Config = env.storage().instance().get(&DataKey::Config).unwrap();
         if caller != proposal.proposer && caller != config.admin {
             return Err(GovernanceError::Unauthorized);
         }
@@ -380,7 +382,7 @@ impl GovernanceContract {
     }
 
     pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), GovernanceError> {
-        let config = Self::get_config(env.clone());
+        let config = Self::require_config(&env)?;
         config.admin.require_auth();
         env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
         Ok(())
@@ -390,9 +392,8 @@ impl GovernanceContract {
         let pending: Address = env.storage().instance().get(&DataKey::PendingAdmin)
             .ok_or(GovernanceError::Unauthorized)?;
         pending.require_auth();
-        let mut config = Self::get_config(env.clone());
-        let previous_admin = config.admin.clone();
-        config.admin = pending.clone();
+        let mut config = Self::require_config(&env)?;
+        config.admin = pending;
         env.storage().instance().set(&DataKey::Config, &config);
         env.storage().instance().remove(&DataKey::PendingAdmin);
 
@@ -405,7 +406,7 @@ impl GovernanceContract {
     }
 
     pub fn cancel_admin_transfer(env: Env) -> Result<(), GovernanceError> {
-        let config = Self::get_config(env.clone());
+        let config = Self::require_config(&env)?;
         config.admin.require_auth();
         env.storage().instance().remove(&DataKey::PendingAdmin);
         Ok(())
@@ -414,6 +415,14 @@ impl GovernanceContract {
 /// Internal helpers — outside `#[contractimpl]` so they are not exported as
 /// contract functions.
 impl GovernanceContract {
+    /// Returns the config if initialized, otherwise returns NotInitialized error.
+    fn require_config(env: &Env) -> Result<Config, GovernanceError> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(GovernanceError::NotInitialized)
+    }
+
     /// Quorum threshold for a given circulating supply: `supply * bps / 10000`.
     ///
     /// Integer division truncates, so the threshold is never rounded up beyond

@@ -1,5 +1,6 @@
 'use client';
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { Scale } from "lucide-react";
 import { useWallet } from "./WalletProvider";
 import { t } from "@/lib/i18n";
@@ -11,11 +12,12 @@ function shorten(address: string): string {
 
 export default function Navbar() {
   const { address, pending, error, connect, disconnect } = useWallet();
+  const pathname = usePathname();
 
   return (
     <nav className="border-b border-[#1a2535] bg-[#080c10]/90 backdrop-blur sticky top-0 z-50">
       <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
-        <Link href="/" className="flex items-center gap-2 font-bold text-lg text-blue-400 hover:text-blue-300 transition-colors">
+        <Link href="/" className="flex items-center gap-2 font-bold text-lg text-blue-400 hover:text-blue-300 focus-visible:text-blue-300 transition-colors">
           <Scale size={20} />
           Quorum
         </Link>
@@ -34,7 +36,7 @@ export default function Navbar() {
             <button
               onClick={connect}
               disabled={pending}
-              className="px-4 py-1.5 border border-blue-700 text-blue-400 hover:bg-blue-900/30 rounded-md transition-colors disabled:opacity-50"
+              className="px-4 py-1.5 border border-blue-700 text-blue-400 hover:bg-blue-900/30 focus-visible:bg-blue-900/30 rounded-md transition-colors disabled:opacity-50"
             >
               {pending ? t("nav.connecting") : t("nav.connect")}
             </button>

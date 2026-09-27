@@ -25,6 +25,7 @@ export default async function ProposalDetailPage({ params }: { params: Promise<{
   const againstPct = formatNumber(total > 0 ? (proposal.againstVotes / total) * 100 : 0, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
   const abstainPct = formatNumber(total > 0 ? (proposal.abstainVotes / total) * 100 : 0, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
   const quorumReached = total >= proposal.quorumRequired;
+  const deadline = describeDeadline(proposal);
 
   const choiceColors: Record<string, string> = {
     for: "text-emerald-400",
